@@ -69,7 +69,14 @@ with tab1:
         on="facility_id"
     )
     
-    # Create size and color metrics
+    # Add AI recommendations
+    merged_df["recommendation"] = np.where(
+        merged_df["power_usage"] > 200,
+        "🛠️ Adjust router sleep cycles",
+        "✅ Stable configuration"
+    )
+    
+    # Create visualization parameters
     merged_df["size"] = np.interp(merged_df["power_usage"], [150, 250], [10, 30])
     merged_df["status"] = np.where(merged_df["connectivity_score"] < 50, "At Risk", "Stable")
     
@@ -80,40 +87,45 @@ with tab1:
         color="status",
         size="size",
         hover_name="type",
-        hover_data=["connectivity_score", "power_usage"],
+        hover_data=["connectivity_score", "power_usage", "recommendation"],
         mapbox_style="carto-positron",
         zoom=4,
         color_discrete_map={"At Risk": "#e74c3c", "Stable": "#2ecc71"}
     )
     fig.update_layout(margin={"r":0,"t":40,"l":0,"b":0})
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Export functionality
+    csv = merged_df[["facility_id", "type", "power_usage", "recommendation"]].to_csv(index=False)
+    st.download_button(
+        "📥 Export Facility Report",
+        data=csv,
+        file_name="gridguardians_report.csv",
+        mime="text/csv"
+    )
 
 with tab2:
     st.subheader("Energy Consumption Forecast")
     
-    # Time series analysis
     selected_facility = st.selectbox("Select Facility", facilities["facility_id"])
     facility_data = equipment[equipment["facility_id"] == selected_facility]
     
-    # Prophet forecasting
+    # Enhanced 72-hour forecast
     try:
         prophet_df = facility_data.rename(columns={"timestamp": "ds", "power_usage": "y"})
         model = Prophet()
         model.fit(prophet_df)
-        future = model.make_future_dataframe(periods=24, freq="H")
+        future = model.make_future_dataframe(periods=72, freq="H")  # 72-hour forecast
         forecast = model.predict(future)
         
         fig = px.line(forecast, x="ds", y="yhat", 
-                     title="24-Hour Power Usage Forecast",
+                     title="72-Hour Power Usage Forecast",
                      labels={"ds": "Time", "yhat": "Predicted Power Usage (kWh)"})
         fig.add_scatter(x=prophet_df["ds"], y=prophet_df["y"], name="Actual Usage")
         st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"Forecasting error: {str(e)}")
 
-# ----------------------
-# Predictive Maintenance
-# ----------------------
 with tab3:
     st.subheader("Equipment Health Monitoring")
     
@@ -122,12 +134,19 @@ with tab3:
     equipment["anomaly_score"] = model.decision_function(equipment[["temperature", "vibration", "power_usage"]])
     equipment["needs_maintenance"] = equipment["anomaly_score"] < np.percentile(equipment["anomaly_score"], 10)
     
-    # Display critical alerts
+    # Display critical alerts with priority
     critical_issues = equipment[equipment["needs_maintenance"]].merge(facilities, on="facility_id")
     if not critical_issues.empty:
+        # Calculate priority scores
+        critical_issues["priority"] = np.interp(
+            critical_issues["anomaly_score"],
+            [critical_issues["anomaly_score"].min(), critical_issues["anomaly_score"].max()],
+            [1, 10]
+        ).astype(int)
+        
         st.write("🚨 Critical Maintenance Needed")
         st.dataframe(
-            critical_issues[["facility_id", "type", "timestamp", "temperature", "vibration"]],
+            critical_issues.sort_values("priority", ascending=False)[["facility_id", "type", "priority", "timestamp", "temperature"]],
             hide_index=True,
             column_config={
                 "timestamp": "Last Reading",
@@ -143,9 +162,6 @@ with tab3:
     else:
         st.success("✅ All equipment operating normally")
 
-# ----------------------
-# Cost-Benefit Analysis
-# ----------------------
 with tab4:
     st.subheader("Financial & Environmental Impact")
     
@@ -163,7 +179,7 @@ with tab4:
     savings = (total_power - predicted_power) * energy_cost
     
     # Maintenance costs
-    num_issues = len(critical_issues)
+    num_issues = len(critical_issues) if 'critical_issues' in locals() else 0
     maint_cost = num_issues * labor_cost * maint_duration
     
     # Environmental impact
@@ -195,6 +211,7 @@ st.sidebar.markdown("""
 - Predictive maintenance alerts
 - Energy cost forecasting
 - Sustainability impact analysis
+
 **Next Steps**
 - Integrate IoT sensor data
 - Add multi-language support
